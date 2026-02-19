@@ -156,7 +156,7 @@ bool initRfModule(String mode, float frequency) {
         //.  3 = Asynchronous serial mode, Data in on GDO0 and data out on either of the GDOx pins.
         ELECHOUSE_cc1101.setPktFormat(3);
         setMHZ(frequency);
-        Serial.println("cc1101 setMHZ(frequency);");
+        Serial.printf("cc1101 setMHZ(%f)\n", frequency);
 
         /* MEMO: cannot change other params after this is executed */
         if (mode == "tx") {

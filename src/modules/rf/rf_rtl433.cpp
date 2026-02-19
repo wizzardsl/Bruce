@@ -1,5 +1,8 @@
 #include "rf_rtl433.h"
-#include "RtlListener.h"
+#include "pulse_data.h"
+#include "rtl_433.h"
+#include "signalDecoder.h"
+
 #ifndef TFT_MOSI
 #define TFT_MOSI -1
 #endif
@@ -7,10 +10,10 @@
 #define stepMin 58
 #define stepMax 812
 #define JSON_MSG_BUFFER 512
-char messageBuffer[JSON_MSG_BUFFER];
 
+char messageBuffer[JSON_MSG_BUFFER];
+//rtl_433_ESP rf;
 int count = 0;
-RtlListener rtlListener;
 
 static bool
 record_rmt_rx_done_callback(rmt_channel_t *channel, const rmt_rx_done_event_data_t *edata, void *user_data) {
@@ -21,41 +24,95 @@ record_rmt_rx_done_callback(rmt_channel_t *channel, const rmt_rx_done_event_data
     return high_task_wakeup == pdTRUE;
 }
 
+void rtl_433_Callback(char *message) {
+    JsonDocument jsonDocument;
+    deserializeJson(jsonDocument, message);
+    logJson(jsonDocument);
+    count++;
+}
+
+void logJson(JsonDocument jsondata) {
+    char JSONmessageBuffer[measureJson(jsondata) + 1];
+    serializeJson(jsondata, JSONmessageBuffer, measureJson(jsondata) + 1);
+    Serial.println("Received message : " + String(JSONmessageBuffer));
+}
+
 void rf_rtl433() {
     if (bruceConfigPins.rfModule != CC1101_SPI_MODULE) {
         displayError("RTL433 needs a CC1101!", true);
         return;
     }
-    if (!initRfModule("rx", 433.92)) {
-        displayError("CC1101 not found!", true);
-        return;
-    }
 
-    int option, idx = 0;
-select:
+#ifndef RF_CC1101
+    displayError("RTL433 Only Supports lillygo T Embeded CC1101 board", true);
+    return;
+#endif
 
-    option = 0;
-    options = {
-        {"433 MHz (default)",                [&]() { option = 3; }},
-        {"868 MHz (common for EU sensors).", [&]() { option = 1; }},
-        {"915 MHz (US ISM band).",           [&]() { option = 2; }},
-    };
+    //     int option, idx = 0;
+    // select:
 
-    idx = loopOptions(options, idx);
+    //     option = 0;
+    //     options = {
+    //         {"433 MHz (default)",                [&]() { option = 3; }},
+    //         {"868 MHz (common for EU sensors).", [&]() { option = 1; }},
+    //         {"915 MHz (US ISM band).",           [&]() { option = 2; }},
+    //     };
 
-    tft.fillScreen(0x0);
+    //     idx = loopOptions(options, idx);
 
-    if (option == 3) {
-        rf_rtl433_run(433.92);
-        goto select;
-    } else if (option == 1) {
-        rf_rtl433_run(868.0);
-        goto select;
-    } else if (option == 2) {
-        rf_rtl433_run(915.0);
-        goto select;
-    }
+    //     tft.fillScreen(0x0);
+
+    //     if (option == 3) {
+    //         rf_rtl433_run(433.92);
+    //         goto select;
+    //     } else if (option == 1) {
+    //         rf_rtl433_run(868.0);
+    //         goto select;
+    //     } else if (option == 2) {
+    //         rf_rtl433_run(915.0);
+    //         goto select;
+    //     }
+    if (!returnToMenu) { rf_rtl433_run(433.92); }
 }
+
+// void rf_rtl433_run2(float frequency) {
+//     printTaskList();
+//     Serial.println("****** setup ******");
+// #ifdef RF_CC1101
+
+//     rf.initReceiver(bruceConfigPins.CC1101_bus.io0, frequency);
+//     tft.drawPixel(0, 0, 0); // To make sure CC1101 shared with TFT works properly
+//     rf.setCallback(rtl_433_Callback, messageBuffer, JSON_MSG_BUFFER);
+//     rf.enableReceiver();
+//     Serial.println("****** setup complete ******");
+//     rf.getModuleStatus();
+
+// #endif
+//     while (!returnToMenu) {
+//         if (check(EscPress) || check(SelPress)) {
+//             returnToMenu = true;
+//             Serial.println("Exiting RTL433 mode...");
+//             break;
+//         }
+//         rf.loop();
+//         //  vTaskDelay(100 / portTICK_PERIOD_MS);
+//         delay(200);
+//     }
+//     rf.deInit();
+//     Serial.println("****** Exited RTL433 mode ******");
+//     tft.drawPixel(0, 0, 0); // To make sure CC1101 shared with TFT works properly
+//     // tft.init(1);
+//     drawMainBorder();
+//     displayTextLine("Exited RTL433 mode", 1);
+//     return;
+// }
+
+// void printTaskList() {
+//     char buffer[1024]; // Ensure this is large enough for all your tasks
+//     vTaskList(buffer);
+//     Serial.println("Task Name\tState\tPrio\tStack\tNum");
+//     Serial.println(buffer);
+// }
 
 void rf_rtl433_run(float frequency) {
 
@@ -65,7 +122,7 @@ void rf_rtl433_run(float frequency) {
         "rx", frequency
     ); // Frequency scan doesnt work when initializing the module with a different frequency
     Serial.println("RF Module Initialized");
-    setMHZ(frequency);
+
     padprintln("****** setup complete ******");
 
     RawRecording recorded;
@@ -73,15 +130,40 @@ void rf_rtl433_run(float frequency) {
     recorded.codes.clear();
     recorded.codeLengths.clear();
     recorded.gaps.clear();
-    recorded.frequency = 0;
+    recorded.frequency = frequency;
+
     rf_raw_record_create(recorded);
+}
+
+static pulse_data_t *raw_to_pulse(rmt_symbol_word_t *code, size_t len, int latestRssi, float frequency) {
+    pulse_data_t *p = (pulse_data_t *)malloc(sizeof(pulse_data_t));
+    if (!p) return NULL;
+    memset(p, 0, sizeof(*p));
+    p->sample_rate = 1000000; // microsecond resolution
+    p->centerfreq_hz = frequency;
+    p->signalRssi = latestRssi;
+
+    unsigned long total_us = 0;
+    /* Each rmt_symbol_word_t contains duration0 (mark) and duration1 (space).
+       Convert to alternating pulse (high) and gap (low) entries. */
+    for (size_t i = 0; i < len && p->num_pulses < PD_MAX_PULSES; ++i) {
+        unsigned long d0 = (unsigned long)(code[i].duration0 / RMT_1US_TICKS);
+        unsigned long d1 = (unsigned long)(code[i].duration1 / RMT_1US_TICKS);
+        p->pulse[p->num_pulses] = (int)d0;
+        p->gap[p->num_pulses] = (int)d1;
+        p->num_pulses++;
+        total_us += d0 + d1;
+    }
+
+    p->signalDuration = total_us;
+    if (p->num_pulses && p->gap[p->num_pulses - 1] == 0) {
+        p->gap[p->num_pulses - 1] = (PD_MAX_GAP_MS + 1) * 1000; // large terminating gap
+    }
+    return p;
 }
 
 void rf_raw_record_create(RawRecording &recorded) {
     RawRecordingStatus status;
-
-    RtlLiveDisplay display(tftWidth, tftHeight);
-    display.clearScreen();
 
     bool fakeRssiPresent = false;
     bool rssiFeature = false;
@@ -156,10 +238,6 @@ void rf_raw_record_create(RawRecording &recorded) {
                 status.lastSignalTime = receivedTime;
             }
 
-            padprintln("Sending Signel to RTL_433");
-            tft.log_print("fdsf");
-            rtlListener.processRecording(recorded, display);
-            padprintln("Detection Complete.");
             ESP_ERROR_CHECK(rmt_receive(rx_ch, item, sizeof(item), &receive_config));
             rx_size = 0;
         }
@@ -192,5 +270,24 @@ void rf_raw_record_create(RawRecording &recorded) {
     rmt_disable(rx_ch);
     rmt_del_channel(rx_ch);
     vQueueDelete(receive_queue);
+
+    // Ensure rtl_433 subsystem is initialized (queue + task)
+    rtlSetup();
+    _setCallback(rtl_433_Callback, messageBuffer, JSON_MSG_BUFFER);
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+
+    // Convert recorded raw RMT codes into pulse_data_t and send to rtl_433
+    for (size_t i = 0; i < recorded.codes.size(); ++i) {
+        pulse_data_t *pulses =
+            raw_to_pulse(recorded.codes[i], recorded.codeLengths[i], status.latestRssi, recorded.frequency);
+        if (pulses) {
+            Serial.println("Sending recorded signal to RTL_433...");
+
+            processSignal(pulses); // rtl_433 task will free pulses
+        } else {
+            Serial.println("Failed to convert recorded signal.");
+        }
+    }
+
     deinitRfModule();
 }

@@ -5,6 +5,7 @@
 #include "core/wifi/webInterface.h"
 #include "core/wifi/wifi_common.h" //to return MAC addr
 #include "modules/badusb_ble/ducky_typer.h"
+#include "modules/rf/rtl_433_serial.h"
 #include <Wire.h>
 #include <globals.h>
 
@@ -18,6 +19,50 @@ uint32_t uptimeCallback(cmd *c) {
     char temp[400];
     snprintf(temp, 400, "Uptime: %02d:%02d:%02d", hr, min, sec);
     serialDevice->println(temp);
+    return true;
+}
+
+uint32_t rtlStartCallback(cmd *c) {
+    // Start rtl_433 in serial mode
+    serialDevice->println("Starting rtl_433 in serial mode...");
+    rtl433setup();
+
+    xTaskCreatePinnedToCore(
+        rtl433loop,    /* Task function. */
+        "rtl_433loop", /* name of task. */
+        10000,         /* Stack size in words */
+        NULL,          /* parameter of the task */
+        1,             /* priority of the task */
+        NULL,          /* Task handle to keep track of created task */
+        0
+    ); /* pin task to core 0 */
+
+    return true;
+}
+
+uint32_t rtlStopCallback(cmd *c) {
+    // Start rtl_433 in serial mode
+    serialDevice->println("Stopping rtl_433 in serial mode...");
+    TaskHandle_t handle = xTaskGetHandle("rtl_433loop");
+
+    // 2. Delete the task if found
+    if (handle != NULL) {
+        Serial.println("Deleting rtl_433loop task...");
+        vTaskDelete(handle);
+        // Optional: Set to NULL to avoid reusing a stale handle
+        handle = NULL;
+    } else {
+        Serial.println("rtl_433loop task not found.");
+    }
+
+    return true;
+}
+
+uint32_t tasksCallback(cmd *c) {
+    char buffer[1024]; // Ensure this is large enough for all your tasks
+    vTaskList(buffer);
+    serialDevice->println("Task Name\tState\tPrio\tStack\tNum");
+    serialDevice->println(buffer);
     return true;
 }
 
@@ -107,7 +152,7 @@ uint32_t infoCallback(cmd *c) {
     serialDevice->print("Bruce v");
     serialDevice->println(BRUCE_VERSION);
     serialDevice->println(GIT_COMMIT_HASH);
-    serialDevice->print("SDK: ");              
+    serialDevice->print("SDK: ");
     serialDevice->println(ESP.getSdkVersion());
     serialDevice->println("MAC addr: " + String(WiFi.macAddress()));
     // https://github.com/espressif/arduino-esp32/blob/master/libraries/ESP32/examples/ChipID/GetChipID/GetChipID.ino
@@ -413,6 +458,9 @@ uint32_t loaderCallback(cmd *c) {
 
 void createUtilCommands(SimpleCLI *cli) {
     cli->addCommand("uptime", uptimeCallback);
+    cli->addCommand("tasks", tasksCallback);
+    cli->addCommand("rtlstart", rtlStartCallback);
+    cli->addCommand("rtlstop", rtlStopCallback);
     cli->addCommand("date", dateCallback);
     cli->addCommand("i2c", i2cCallback);
     cli->addCommand("free", freeCallback);
