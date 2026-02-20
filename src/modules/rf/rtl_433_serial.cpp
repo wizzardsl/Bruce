@@ -57,3 +57,8 @@ void rtl433loop(void *pvParameters) {
         delay(100);
     }
 }
+
+void rtl433exit() {
+    rf.deInit();
+    Serial.println("rtl_433 receiver disabled.");
+}

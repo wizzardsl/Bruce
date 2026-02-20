@@ -55,6 +55,7 @@ uint32_t rtlStopCallback(cmd *c) {
         Serial.println("rtl_433loop task not found.");
     }
 
+    rtl433exit();
     return true;
 }
 

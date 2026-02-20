@@ -8,3 +8,4 @@ void rtl433loop(void *pvParameters);
 void rtl_433_serial_Callback(char *message);
 void logJson2(JsonDocument jsondata);
 unsigned long uptime();
+void rtl433exit();
